@@ -7,7 +7,7 @@ import html
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame,
@@ -212,3 +212,38 @@ def etiqueta(texto: str, nombre: str | None = None, ajustar: bool = True) -> QLa
         lbl.setObjectName(nombre)
     lbl.setWordWrap(ajustar)
     return lbl
+
+
+class TareaSegundoPlano(QThread):
+    """Ejecuta una función larga (simulación) fuera del hilo de la interfaz.
+
+    La función recibe un callback `reportar(hecho, total)` que emite el progreso
+    y permite cancelar la tarea entre pasos.
+    """
+
+    progreso = Signal(int, int)
+    terminado = Signal(object)
+    fallo = Signal(str)
+
+    def __init__(self, funcion, parent=None):
+        super().__init__(parent)
+        self._funcion = funcion
+        self._cancelado = False
+
+    def cancelar(self) -> None:
+        self._cancelado = True
+
+    def _reportar(self, hecho: int, total: int) -> None:
+        if self._cancelado:
+            raise InterruptedError("Simulación cancelada por el usuario.")
+        self.progreso.emit(hecho, total)
+
+    def run(self) -> None:
+        try:
+            resultado = self._funcion(self._reportar)
+        except InterruptedError as exc:
+            self.fallo.emit(str(exc))
+        except Exception as exc:  # se informa en la interfaz en lugar de cerrar la app
+            self.fallo.emit(f"{type(exc).__name__}: {exc}")
+        else:
+            self.terminado.emit(resultado)

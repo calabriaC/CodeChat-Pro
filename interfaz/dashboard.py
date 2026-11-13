@@ -60,8 +60,8 @@ class PaginaDashboard(QWidget):
         for i, (clave, texto, desc) in enumerate(
             [
                 ("transmision", "Transmitir un mensaje", "Codificar, enviar por el BSC y decodificar."),
-                ("laboratorio", "Laboratorio matemático", "d_min, t, R, C y probabilidades teóricas."),
-                ("estadisticas", "Estadísticas y gráficas", "Curvas teóricas y simulación Monte Carlo."),
+                ("laboratorio", "Laboratorio BSC", "Experimentos repetidos con y sin código (n = 3, 5, 7)."),
+                ("resultados", "Resultados", "Error frente a tasa, capacidad de Shannon y fundamento."),
                 ("historial", "Historial de experimentos", "Consultar, filtrar y exportar en JSON."),
             ]
         ):

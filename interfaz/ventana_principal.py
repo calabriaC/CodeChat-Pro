@@ -16,9 +16,9 @@ from PySide6.QtWidgets import (
 
 from almacenamiento.gestor_json import GestorHistorial
 from interfaz.dashboard import PaginaDashboard
-from interfaz.estadisticas import PaginaEstadisticas
 from interfaz.historial import PaginaHistorial
 from interfaz.laboratorio import PaginaLaboratorio
+from interfaz.resultados import PaginaResultados
 from interfaz.transmision import PaginaTransmision
 
 
@@ -32,14 +32,14 @@ class VentanaPrincipal(QMainWindow):
         self.dashboard = PaginaDashboard(gestor)
         self.transmision = PaginaTransmision(gestor)
         self.laboratorio = PaginaLaboratorio()
-        self.estadisticas = PaginaEstadisticas()
+        self.resultados = PaginaResultados()
         self.historial = PaginaHistorial(gestor)
 
         self.paginas = {
-            "dashboard": ("Dashboard", self.dashboard),
+            "dashboard": ("Inicio", self.dashboard),
             "transmision": ("Transmisión", self.transmision),
-            "laboratorio": ("Laboratorio matemático", self.laboratorio),
-            "estadisticas": ("Estadísticas y gráficas", self.estadisticas),
+            "laboratorio": ("Laboratorio BSC", self.laboratorio),
+            "resultados": ("Resultados", self.resultados),
             "historial": ("Historial", self.historial),
         }
 
@@ -99,6 +99,12 @@ class VentanaPrincipal(QMainWindow):
             self.historial.actualizar()
         self.pila.setCurrentWidget(pagina)
         self.botones[clave].setChecked(True)
+
+    def closeEvent(self, evento) -> None:
+        # Detiene las simulaciones en segundo plano antes de cerrar.
+        self.laboratorio.detener()
+        self.resultados.detener()
+        super().closeEvent(evento)
 
     def _historial_cambiado(self) -> None:
         self.dashboard.actualizar()

@@ -1,270 +1,366 @@
-"""Laboratorio matemático: parámetros del código, capacidad del BSC y error residual."""
+"""Laboratorio BSC: experimentos repetidos con y sin código (Monte Carlo)."""
 
 from __future__ import annotations
 
-import math
+import html
+from datetime import datetime
+from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDoubleSpinBox, QGridLayout, QSlider, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGridLayout,
+    QHeaderView,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
+from almacenamiento.gestor_json import GestorHistorial
 from core import matematicas as mat
+from core.decodificador import PoliticaDesempate
+from core.simulacion import ResultadoExperimento, experimento_con_sin_codigo
 from interfaz import estilos as e
-from interfaz.componentes import LienzoGrafica, Panel, Tarjeta, etiqueta, fila, pagina_desplazable
+from interfaz.componentes import (
+    Aviso,
+    LienzoGrafica,
+    Panel,
+    TareaSegundoPlano,
+    etiqueta,
+    fila,
+    pagina_desplazable,
+)
+
+COLUMNAS = [
+    "n", "p", "Ensayos × bits", "Política", "BER sin código", "BER con código", "IC 95 % (con código)",
+    "P_e teórica", "Ambiguos", "Mensajes íntegros sin código", "Mensajes íntegros con código",
+    "Éxito teórico con código", "Tasa R",
+]
 
 
 def _fmt(x: float) -> str:
-    """Formato legible para probabilidades que van de 1 a 1e-30."""
     if x == 0:
         return "0"
-    if x >= 1e-3:
-        return f"{x:.6f}".rstrip("0").rstrip(".")
-    return f"{x:.4e}"
+    return f"{x:.4f}" if x >= 1e-3 else f"{x:.3e}"
 
 
 class PaginaLaboratorio(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._resultados: list[ResultadoExperimento] = []
+        self._ultimo_lote: list[ResultadoExperimento] = []
+        self._tarea: TareaSegundoPlano | None = None
+
         area, lay = pagina_desplazable(
-            "Laboratorio matemático",
-            "Ajuste n y p para calcular los parámetros del código de repetición, la capacidad del canal "
-            "y la probabilidad teórica de error tras la decodificación por mayoría.",
+            "Laboratorio BSC",
+            "Experimentos repetidos: cada ensayo genera un mensaje aleatorio de k bits y lo envía por el "
+            "mismo canal BSC(p) sin código y con código de repetición. Los resultados provienen de "
+            "simulaciones realmente ejecutadas y se comparan con los valores teóricos.",
         )
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.addWidget(area)
 
-        # --- controles ---
-        controles = Panel("Parámetros")
+        # --- configuración ---
+        conf = Panel("Configuración del experimento")
         self.spin_n = QSpinBox()
         self.spin_n.setRange(mat.N_MIN, mat.N_MAX)
-        self.spin_n.setValue(5)
-        self.slider_n = QSlider(Qt.Horizontal)
-        self.slider_n.setRange(mat.N_MIN, mat.N_MAX)
-        self.slider_n.setValue(5)
-        self.spin_n.valueChanged.connect(self.slider_n.setValue)
-        self.slider_n.valueChanged.connect(self.spin_n.setValue)
-
+        self.spin_n.setValue(3)
         self.spin_p = QDoubleSpinBox()
         self.spin_p.setRange(mat.P_MIN, mat.P_MAX)
         self.spin_p.setDecimals(4)
         self.spin_p.setSingleStep(0.01)
         self.spin_p.setValue(0.10)
-        self.slider_p = QSlider(Qt.Horizontal)
-        self.slider_p.setRange(0, 500)
-        self.slider_p.setValue(100)
-        self.slider_p.valueChanged.connect(lambda v: self.spin_p.setValue(v / 1000))
-        self.spin_p.valueChanged.connect(self._sincronizar_slider_p)
-
-        self.spin_k = QSpinBox()
-        self.spin_k.setRange(1, 10_000)
-        self.spin_k.setValue(20)
-        self.spin_k.setSuffix(" caracteres ASCII")
-        self.spin_k.setToolTip("Longitud del mensaje para calcular la probabilidad de fallo del mensaje (8 bits por carácter).")
+        self.spin_bits = QSpinBox()
+        self.spin_bits.setRange(8, 100_000)
+        self.spin_bits.setValue(160)
+        self.spin_bits.setToolTip("Bits de información por mensaje de prueba (160 bits = 20 caracteres ASCII).")
+        self.spin_ensayos = QSpinBox()
+        self.spin_ensayos.setRange(1, 100_000)
+        self.spin_ensayos.setValue(500)
+        self.spin_ensayos.setToolTip("Cantidad de mensajes de prueba transmitidos.")
+        self.spin_semilla = QSpinBox()
+        self.spin_semilla.setRange(0, 2**31 - 1)
+        self.spin_semilla.setValue(2026)
+        self.cmb_politica = QComboBox()
+        for pol in (PoliticaDesempate.ALEATORIO, PoliticaDesempate.AMBIGUO,
+                    PoliticaDesempate.CERO, PoliticaDesempate.UNO):
+            self.cmb_politica.addItem(pol.etiqueta, pol.value)
+        self.cmb_politica.setToolTip(
+            "Solo afecta a n par. 'Decisión aleatoria' es la política de la fórmula teórica; "
+            "'Marcar como ambiguo' cuenta los empates aparte (no son errores ni aciertos)."
+        )
 
         rej = QGridLayout()
         rej.setHorizontalSpacing(14)
-        rej.addWidget(etiqueta("Longitud n"), 0, 0)
-        rej.addWidget(self.spin_n, 0, 1)
-        rej.addWidget(self.slider_n, 0, 2)
-        rej.addWidget(etiqueta("Probabilidad p"), 1, 0)
-        rej.addWidget(self.spin_p, 1, 1)
-        rej.addWidget(self.slider_p, 1, 2)
-        rej.addWidget(etiqueta("Mensaje de"), 2, 0)
-        rej.addWidget(self.spin_k, 2, 1)
-        rej.setColumnStretch(2, 1)
-        controles.cuerpo.addLayout(rej)
-        lay.addWidget(controles)
+        rej.setVerticalSpacing(8)
+        campos = [
+            ("Longitud n", self.spin_n), ("Probabilidad p", self.spin_p), ("Bits por mensaje", self.spin_bits),
+            ("Ensayos (mensajes)", self.spin_ensayos), ("Semilla", self.spin_semilla),
+            ("Desempate (n par)", self.cmb_politica),
+        ]
+        for i, (texto, w) in enumerate(campos):
+            rej.addWidget(etiqueta(texto), i // 3, 2 * (i % 3))
+            rej.addWidget(w, i // 3, 2 * (i % 3) + 1)
+        for col in (1, 3, 5):
+            rej.setColumnStretch(col, 1)
+        conf.cuerpo.addLayout(rej)
 
-        # --- tarjetas ---
-        self.tarjetas = {
-            "dmin": Tarjeta("Distancia mínima d_min", e.CIAN),
-            "t": Tarjeta("Corrección garantizada t", e.VERDE),
-            "R": Tarjeta("Tasa del código R", e.AZUL),
-            "C": Tarjeta("Capacidad del canal C", e.CIAN),
-            "pe": Tarjeta("Error residual por bit P_e", e.ROJO),
-            "pm": Tarjeta("Fallo del mensaje completo", e.NARANJA),
-        }
-        rej_t = QGridLayout()
-        rej_t.setSpacing(12)
-        for i, t in enumerate(self.tarjetas.values()):
-            rej_t.addWidget(t, i // 3, i % 3)
-        lay.addLayout(rej_t)
+        self.btn_ejecutar = QPushButton("▶ Ejecutar experimento")
+        self.btn_ejecutar.setObjectName("primario")
+        self.btn_ejecutar.clicked.connect(lambda: self.ejecutar([self.spin_n.value()]))
+        self.btn_357 = QPushButton("Comparar n = 3, 5 y 7")
+        self.btn_357.setObjectName("primario")
+        self.btn_357.clicked.connect(lambda: self.ejecutar([3, 5, 7]))
+        presets = []
+        for n in (3, 5, 7):
+            b = QPushButton(f"Preconfigurado n = {n}")
+            b.setObjectName("chip")
+            b.setToolTip(f"n = {n}, p = 0.1, 500 mensajes de 160 bits, semilla 2026, desempate aleatorio.")
+            b.clicked.connect(lambda _=False, m=n: self._preconfigurar(m))
+            presets.append(b)
+        self.btn_cancelar = QPushButton("Cancelar")
+        self.btn_cancelar.setEnabled(False)
+        self.btn_cancelar.clicked.connect(self.cancelar)
+        acciones = fila(self.btn_ejecutar, self.btn_357, *presets, espaciado=8, estirar_final=True)
+        acciones.addWidget(self.btn_cancelar)
+        conf.cuerpo.addLayout(acciones)
+        self.barra = QProgressBar()
+        self.barra.setTextVisible(True)
+        self.barra.setFormat("%p %")
+        self.barra.setStyleSheet(
+            f"QProgressBar {{ background:{e.FONDO}; border:1px solid {e.BORDE}; border-radius:6px; height:16px;"
+            f" text-align:center; color:{e.TEXTO}; }} QProgressBar::chunk {{ background:{e.AZUL}; border-radius:6px; }}"
+        )
+        self.barra.hide()
+        conf.cuerpo.addWidget(self.barra)
+        lay.addWidget(conf)
 
-        # --- explicaciones ---
-        self.panel_codigo = Panel("1 · Parámetros del código de repetición")
-        self.lbl_codigo = etiqueta("")
-        self.panel_codigo.cuerpo.addWidget(self.lbl_codigo)
+        self.aviso = Aviso()
+        lay.addWidget(self.aviso)
 
-        self.panel_canal = Panel("2 · Capacidad del canal binario simétrico")
-        self.lbl_canal = etiqueta("")
-        self.panel_canal.cuerpo.addWidget(self.lbl_canal)
+        # --- resultados ---
+        self.panel_conclusion = Panel("Conclusión basada en los datos")
+        self.lbl_conclusion = etiqueta("")
+        self.panel_conclusion.cuerpo.addWidget(self.lbl_conclusion)
+        self.panel_conclusion.hide()
+        lay.addWidget(self.panel_conclusion)
 
-        self.panel_error = Panel("3 · Probabilidad de error residual (decodificación por mayoría)")
-        self.lbl_error = etiqueta("")
-        self.grafica = LienzoGrafica(alto=3.4)
-        self.panel_error.cuerpo.addWidget(self.lbl_error)
-        self.panel_error.cuerpo.addWidget(self.grafica)
+        self.panel_grafica = Panel("Con código frente a sin código")
+        self.lienzo = LienzoGrafica(alto=4.2)
+        self.panel_grafica.cuerpo.addWidget(self.lienzo)
+        self.panel_grafica.hide()
+        lay.addWidget(self.panel_grafica)
 
-        self.panel_rc = Panel("4 · Interpretación: tasa R frente a capacidad C")
-        self.lbl_rc = etiqueta("")
-        self.panel_rc.cuerpo.addWidget(self.lbl_rc)
-
-        for p in (self.panel_codigo, self.panel_canal, self.panel_error, self.panel_rc):
-            lay.addWidget(p)
+        panel_tabla = Panel("Resultados de la sesión")
+        self.tabla = QTableWidget(0, len(COLUMNAS))
+        self.tabla.setHorizontalHeaderLabels(COLUMNAS)
+        self.tabla.verticalHeader().setVisible(False)
+        self.tabla.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.tabla.setMinimumHeight(240)
+        btn_limpiar = QPushButton("Limpiar")
+        btn_limpiar.clicked.connect(self._limpiar)
+        self.btn_exportar = QPushButton("Exportar resultados a JSON")
+        self.btn_exportar.clicked.connect(self._exportar)
+        self.btn_exportar.setEnabled(False)
+        panel_tabla.cuerpo.addWidget(self.tabla)
+        panel_tabla.cuerpo.addLayout(fila(etiqueta(
+            "BER = errores en bits útiles / bits útiles. Los ambiguos (empates sin resolver) se cuentan aparte. "
+            "IC 95 %: intervalo de confianza de Wilson de la BER con código.", "secundario"),
+            btn_limpiar, self.btn_exportar))
+        lay.addWidget(panel_tabla)
         lay.addStretch(1)
 
-        for w in (self.spin_n, self.spin_p, self.spin_k):
-            w.valueChanged.connect(self.actualizar)
-        self.actualizar()
-
     # ------------------------------------------------------------------
-    def _sincronizar_slider_p(self, valor: float) -> None:
-        # Sin bloquear señales, el slider (paso 0.001) redondearía el valor escrito.
-        self.slider_p.blockSignals(True)
-        self.slider_p.setValue(round(valor * 1000))
-        self.slider_p.blockSignals(False)
+    def _preconfigurar(self, n: int) -> None:
+        self.spin_n.setValue(n)
+        self.spin_p.setValue(0.10)
+        self.spin_bits.setValue(160)
+        self.spin_ensayos.setValue(500)
+        self.spin_semilla.setValue(2026)
+        self.cmb_politica.setCurrentIndex(self.cmb_politica.findData(PoliticaDesempate.ALEATORIO.value))
+        self.ejecutar([n])
 
-    def actualizar(self) -> None:
-        n = self.spin_n.value()
+    def _en_ejecucion(self, activo: bool) -> None:
+        for w in (self.btn_ejecutar, self.btn_357):
+            w.setEnabled(not activo)
+        self.btn_cancelar.setEnabled(activo)
+        self.barra.setVisible(activo)
+
+    def ejecutar(self, longitudes: list[int]) -> None:
+        if self._tarea is not None:
+            return
         p = self.spin_p.value()
-        k_bits = 8 * self.spin_k.value()
+        bits = self.spin_bits.value()
+        ensayos = self.spin_ensayos.value()
+        semilla = self.spin_semilla.value()
+        politica = PoliticaDesempate(self.cmb_politica.currentData())
 
-        dmin = mat.distancia_minima(n)
-        t = mat.capacidad_correccion(n)
-        R = mat.tasa_codigo(n)
-        H = mat.entropia_binaria(p)
-        C = mat.capacidad_bsc(p)
-        pe = mat.probabilidad_error_bit(n, p)
-        p_estricta = mat.probabilidad_error_mayoria_estricta(n, p)
-        p_empate = mat.probabilidad_empate(n, p)
-        pm = mat.probabilidad_fallo_mensaje(n, p, k_bits)
-        pm_amb = mat.probabilidad_fallo_mensaje(n, p, k_bits, empates_como_fallo=True)
+        def trabajo(reportar):
+            resultados = []
+            for i, n in enumerate(longitudes):
+                reportar(i, len(longitudes))
+                # Misma semilla para cada n: todos los códigos ven los mismos mensajes.
+                resultados.append(experimento_con_sin_codigo(n, p, bits, ensayos, semilla, politica))
+            reportar(len(longitudes), len(longitudes))
+            return resultados
 
-        self.tarjetas["dmin"].establecer(str(dmin), f"Detecta hasta {mat.capacidad_deteccion(n)} errores por bloque")
-        self.tarjetas["t"].establecer(str(t), f"⌊({n} − 1)/2⌋ errores por bloque")
-        self.tarjetas["R"].establecer(f"{R:.4f}", f"1/{n} · {mat.redundancia(n)} bits redundantes por bit")
-        self.tarjetas["C"].establecer(f"{C:.4f}", f"bits por uso del canal · H₂(p) = {H:.4f}")
-        self.tarjetas["pe"].establecer(_fmt(pe), f"Sin codificar sería p = {_fmt(p)}")
-        self.tarjetas["pm"].establecer(_fmt(pm), f"Mensaje de {k_bits} bits de información")
+        self.aviso.mostrar("info", f"Simulando {ensayos} mensajes de {bits} bits para n = "
+                                   f"{', '.join(map(str, longitudes))} con p = {p:g}…")
+        self.barra.setRange(0, len(longitudes))
+        self.barra.setValue(0)
+        self._en_ejecucion(True)
+        self._tarea = TareaSegundoPlano(trabajo, self)
+        self._tarea.progreso.connect(lambda hecho, total: self.barra.setValue(hecho))
+        self._tarea.terminado.connect(self._terminado)
+        self._tarea.fallo.connect(self._fallo)
+        self._tarea.finished.connect(self._liberar_tarea)
+        self._tarea.start()
 
-        # 1. Código
-        self.lbl_codigo.setText(
-            f"El código de repetición de longitud n = {n} tiene solo dos palabras código: "
-            f"<span style='font-family:Consolas;color:{e.CIAN}'>{'0' * n}</span> y "
-            f"<span style='font-family:Consolas;color:{e.CIAN}'>{'1' * n}</span>.<br>"
-            f"<b>Distancia mínima:</b> d<sub>min</sub> = n = <b>{dmin}</b> (las dos palabras difieren en todas las posiciones).<br>"
-            f"<b>Corrección garantizada:</b> t = ⌊(d<sub>min</sub> − 1)/2⌋ = ⌊({n} − 1)/2⌋ = <b>{t}</b>: "
-            f"cualquier patrón de hasta {t} error(es) en un bloque se corrige con certeza.<br>"
-            f"<b>Tasa:</b> R = k/n = 1/{n} = <b>{R:.4f}</b> · <b>Redundancia:</b> {mat.redundancia(n)} bit(s) "
-            f"redundantes por cada bit de información (el {100 * (1 - R):.1f} % de lo transmitido es redundancia)."
-            + (
-                f"<br><span style='color:{e.NARANJA}'>n es par: con exactamente {n // 2} errores el bloque queda "
-                f"empatado ({n // 2} unos y {n // 2} ceros) y la mayoría no puede decidir.</span>"
-                if n % 2 == 0
-                else ""
-            )
-        )
+    def cancelar(self) -> None:
+        if self._tarea is not None:
+            self._tarea.cancelar()
 
-        # 2. Canal
-        if p == 0:
-            detalle_h = "Caso límite p = 0: por convenio 0·log₂0 = 0, así que H₂(0) = 0 y el canal es perfecto (C = 1)."
-        elif p == 0.5:
-            detalle_h = "Caso límite p = 0.5: H₂(0.5) = 1, por lo que C = 0. La salida es independiente de la entrada: no se transmite información."
-        else:
-            detalle_h = (
-                f"H₂({p:g}) = −{p:g}·log₂({p:g}) − {1 - p:g}·log₂({1 - p:g}) = {p * -math.log2(p):.4f} + "
-                f"{(1 - p) * -math.log2(1 - p):.4f} = <b>{H:.4f}</b>"
-            )
-        self.lbl_canal.setText(
-            "<span style='font-family:Consolas'>H₂(p) = −p·log₂(p) − (1−p)·log₂(1−p) &nbsp;&nbsp; C = 1 − H₂(p)</span><br>"
-            f"{detalle_h}<br>"
-            f"<b>Capacidad:</b> C = 1 − {H:.4f} = <b>{C:.4f}</b> bits de información por bit transmitido. "
-            "Es el máximo de información confiable que el canal admite por cada uso."
-        )
+    def detener(self) -> None:
+        """Cancela y espera la tarea en curso (al cerrar la aplicación)."""
+        if self._tarea is not None:
+            self._tarea.cancelar()
+            self._tarea.wait()
 
-        # 3. Error residual
-        if n % 2:
-            formula = f"P_e = Σ<sub>k={(n + 1) // 2}</sub><sup>{n}</sup> C({n},k)·p<sup>k</sup>·(1−p)<sup>{n}−k</sup>"
-        else:
-            formula = (
-                f"P_e = Σ<sub>k={n // 2 + 1}</sub><sup>{n}</sup> C({n},k)·p<sup>k</sup>·(1−p)<sup>{n}−k</sup> "
-                f"+ ½·C({n},{n // 2})·p<sup>{n // 2}</sup>·(1−p)<sup>{n // 2}</sup> &nbsp;(desempate aleatorio)"
-            )
-        partes = [
-            f"<span style='font-family:Consolas;color:{e.CIAN}'>{formula}</span>",
-            f"Para p = {p:g}: <b>P_e = {_fmt(pe)}</b> por bit de información "
-            f"(sin codificar el error sería p = {_fmt(p)}"
-            + (f"; la codificación lo reduce {p / pe:,.1f} veces)." if pe > 0 and pe < p else ")."),
+    def _liberar_tarea(self) -> None:
+        self._tarea = None
+        self._en_ejecucion(False)
+
+    def _fallo(self, mensaje: str) -> None:
+        self.aviso.mostrar("advertencia", html.escape(mensaje))
+
+    def _terminado(self, resultados: list[ResultadoExperimento]) -> None:
+        self.aviso.ocultar()
+        self._ultimo_lote = resultados
+        self._resultados.extend(resultados)
+        for r in resultados:
+            self._agregar_fila(r)
+        self.btn_exportar.setEnabled(True)
+        self._dibujar(resultados)
+        self._concluir(resultados)
+
+    def _agregar_fila(self, r: ResultadoExperimento) -> None:
+        bajo, alto = r.intervalo_ber_con_codigo
+        valores = [
+            r.n, f"{r.p:g}", f"{r.ensayos} × {r.bits_por_ensayo}", r.politica.value,
+            _fmt(r.sin_codigo.ber_residual), _fmt(r.con_codigo.ber_residual), f"[{_fmt(bajo)}, {_fmt(alto)}]",
+            _fmt(r.ber_teorica_con_codigo), r.con_codigo.ambiguos,
+            f"{r.mensajes_ok_sin_codigo}/{r.ensayos} ({100 * r.mensajes_ok_sin_codigo / r.ensayos:.1f} %)",
+            f"{r.mensajes_ok_con_codigo}/{r.ensayos} ({100 * r.mensajes_ok_con_codigo / r.ensayos:.1f} %)",
+            f"{100 * r.exito_mensaje_teorico_con_codigo:.1f} %", f"1/{r.n}",
         ]
-        if n % 2 == 0:
-            partes.append(
-                f"Desglose para n par: P(mayoría errónea) = {_fmt(p_estricta)} y P(empate) = {_fmt(p_empate)}. "
-                f"Con desempate aleatorio la mitad de los empates acierta. Observe que P_e(n = {n}) = "
-                f"P_e(n = {n - 1}) = {_fmt(mat.probabilidad_error_bit(n - 1, p))}: el bit adicional de un código par no "
-                "reduce el error, solo añade la posibilidad de empate."
-            )
-        partes.append(
-            f"<b>Mensaje completo</b> (k = {k_bits} bits, bloques independientes): "
-            f"P(fallo) = 1 − (1 − P_e)<sup>k</sup> = <b>{_fmt(pm)}</b>"
-            + (
-                f"; si los empates se marcan como ambiguos, P(no recuperar) = {_fmt(pm_amb)}."
-                if n % 2 == 0
-                else "."
-            )
-            + " La probabilidad de fallo de un mensaje crece con su longitud, aunque P_e por bit sea pequeña."
-        )
-        self.lbl_error.setText("<br>".join(partes))
-        self._dibujar_binomial(n, p)
+        fila_i = self.tabla.rowCount()
+        self.tabla.insertRow(fila_i)
+        for j, v in enumerate(valores):
+            item = QTableWidgetItem(str(v))
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.tabla.setItem(fila_i, j, item)
+        self.tabla.scrollToBottom()
 
-        # 4. R frente a C
-        if R < C:
-            estado = (
-                f"<b style='color:{e.VERDE}'>R = {R:.4f} &lt; C = {C:.4f}.</b> Por el teorema de codificación de "
-                "canal de Shannon existen códigos con tasa R cuya probabilidad de error puede hacerse tan pequeña "
-                "como se quiera. Esto <b>no</b> significa que este código de repetición lo logre: su error es "
-                f"P_e = {_fmt(pe)} y solo tiende a 0 cuando n → ∞, es decir, cuando R = 1/n → 0."
-            )
-        elif R == C:
-            estado = f"<b style='color:{e.NARANJA}'>R = C = {C:.4f}.</b> Caso frontera del teorema de Shannon."
-        else:
-            estado = (
-                f"<b style='color:{e.ROJO}'>R = {R:.4f} &gt; C = {C:.4f}.</b> Por el inverso del teorema de "
-                "codificación de canal, ningún código con esta tasa puede lograr una probabilidad de error "
-                "arbitrariamente pequeña en este canal."
-            )
-        self.lbl_rc.setText(
-            estado + "<br><span style='color:%s'>Los códigos de repetición compran confiabilidad sacrificando "
-            "tasa: para reducir el error hay que aumentar n y la tasa cae hacia 0. Los códigos más eficientes "
-            "(Hamming, BCH, LDPC, polares) se acercan a C con tasas positivas.</span>" % e.TEXTO_2
-        )
-
-    def _dibujar_binomial(self, n: int, p: float) -> None:
-        """Distribución del número de errores por bloque, coloreada según el resultado de la decisión."""
-        ax = self.grafica.nuevo_eje()
-        ks = list(range(n + 1))
-        probs = [math.comb(n, k) * p**k * (1 - p) ** (n - k) for k in ks]
-        colores, etiquetas = [], []
-        for k in ks:
-            if 2 * k < n:
-                colores.append(e.VERDE)
-                etiquetas.append("Corregido (k < n/2)")
-            elif 2 * k == n:
-                colores.append(e.NARANJA)
-                etiquetas.append("Empate (k = n/2)")
-            else:
-                colores.append(e.ROJO)
-                etiquetas.append("Decisión errónea (k > n/2)")
-        vistos = set()
-        for k, pr, c, et in zip(ks, probs, colores, etiquetas):
-            ax.bar(k, pr, color=c, width=0.8, edgecolor=e.PANEL, linewidth=2,
-                   label=et if et not in vistos else None)
-            vistos.add(et)
-        ax.axvline(mat.capacidad_correccion(n) + 0.5, color=e.TEXTO_2, linestyle="--", linewidth=1)
-        ax.text(mat.capacidad_correccion(n) + 0.55, ax.get_ylim()[1] * 0.92, f" t = {mat.capacidad_correccion(n)}",
-                color=e.TEXTO_2, fontsize=8.5)
-        ax.set_title(f"Número de errores por bloque · Binomial(n = {n}, p = {p:g})")
-        ax.set_xlabel("k = bits invertidos en un bloque de n bits")
-        ax.set_ylabel("Probabilidad P(K = k)")
-        ax.set_xticks(ks)
+    def _dibujar(self, resultados: list[ResultadoExperimento]) -> None:
+        ax = self.lienzo.nuevo_eje()
+        etiquetas = ["Sin código"] + [f"n = {r.n}" for r in resultados]
+        # Sin código: se agregan todos los ensayos del lote (todos usan la misma p).
+        total_sin = sum(r.bits_totales for r in resultados)
+        err_sin = sum(r.sin_codigo.errores_residuales for r in resultados)
+        observados = [err_sin / total_sin] + [r.con_codigo.ber_residual for r in resultados]
+        teoricos = [resultados[0].p] + [r.ber_teorica_con_codigo for r in resultados]
+        x = np.arange(len(etiquetas))
+        piso = 1e-7
+        colores = [e.TEXTO_3] + [e.SERIES[i % len(e.SERIES)] for i in range(len(resultados))]
+        ax.bar(x, [max(v, piso) for v in observados], width=0.6, color=colores, edgecolor=e.PANEL, linewidth=2,
+               label="BER residual observada")
+        ax.scatter(x, [max(v, piso) for v in teoricos], marker="_", s=900, color=e.TEXTO, linewidths=2.5, zorder=3,
+                   label="Valor teórico (p o P_e)")
+        for xi, v in zip(x, observados):
+            ax.annotate("0 errores" if v == 0 else _fmt(v), (xi, max(v, piso)), textcoords="offset points",
+                        xytext=(0, 6), ha="center", fontsize=8.5, color=e.TEXTO_2)
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=piso)
+        ax.grid(axis="x", visible=False)
+        ax.set_axisbelow(True)
+        ax.set_xticks(x, etiquetas)
+        ax.set_title(f"BER residual con y sin código (p = {resultados[0].p:g}, "
+                     f"{resultados[0].ensayos} mensajes de {resultados[0].bits_por_ensayo} bits)")
+        ax.set_xlabel("Esquema de transmisión")
+        ax.set_ylabel("BER residual por bit útil (escala log)")
         ax.legend(loc="upper right")
-        self.grafica.dibujar()
+        self.lienzo.dibujar()
+        self.panel_grafica.show()
+
+    def _concluir(self, resultados: list[ResultadoExperimento]) -> None:
+        partes = []
+        for r in resultados:
+            sin, con = r.sin_codigo, r.con_codigo
+            if con.errores_residuales == 0:
+                total = f"{r.bits_totales:,}".replace(",", ".")
+                mejora = f"no se observó ningún error residual en {total} bits (P_e teórica {_fmt(r.ber_teorica_con_codigo)})"
+            else:
+                factor = sin.ber_residual / con.ber_residual if con.ber_residual else float("inf")
+                mejora = (f"la BER bajó de {_fmt(sin.ber_residual)} a {_fmt(con.ber_residual)} "
+                          f"(≈ {factor:.1f} veces menor; teoría: {_fmt(r.p)} → {_fmt(r.ber_teorica_con_codigo)})")
+            partes.append(
+                f"<b>n = {r.n}:</b> {mejora}; mensajes íntegros {r.mensajes_ok_sin_codigo} → "
+                f"{r.mensajes_ok_con_codigo} de {r.ensayos}. Precio: {r.n}× más bits transmitidos "
+                f"(R = 1/{r.n} = {1 / r.n:.3f})."
+            )
+        p = resultados[0].p
+        C = mat.capacidad_bsc(p)
+        cierre = (
+            f"Con p = {p:g} la capacidad del canal es C = {C:.3f}. Cada aumento de n reduce el error, pero "
+            "también la tasa: la repetición cambia eficiencia por fiabilidad, mientras que Shannon garantiza "
+            "códigos con error arbitrariamente pequeño a cualquier tasa R &lt; C."
+            if 0 < p < 0.5 else
+            ("Con p = 0 el canal no introduce errores: el código solo añade redundancia." if p == 0 else
+             "Con p = 0.5 la salida es independiente de la entrada (C = 0): ningún código puede ayudar.")
+        )
+        self.lbl_conclusion.setText("<br>".join(partes) + "<br><br>" + cierre)
+        self.panel_conclusion.show()
+
+    def _limpiar(self) -> None:
+        self._resultados.clear()
+        self.tabla.setRowCount(0)
+        self.btn_exportar.setEnabled(False)
+        self.panel_grafica.hide()
+        self.panel_conclusion.hide()
+
+    def _exportar(self) -> None:
+        sugerido = Path.home() / f"codechat_laboratorio_{datetime.now():%Y%m%d_%H%M%S}.json"
+        ruta, _ = QFileDialog.getSaveFileName(self, "Exportar resultados", str(sugerido), "JSON (*.json)")
+        if not ruta:
+            return
+        datos = [
+            {
+                "n": r.n, "p": r.p, "ensayos": r.ensayos, "bits_por_ensayo": r.bits_por_ensayo,
+                "semilla": r.semilla, "politica_desempate": r.politica.value,
+                "sin_codigo": r.sin_codigo.a_diccionario(), "con_codigo": r.con_codigo.a_diccionario(),
+                "mensajes_integros_sin_codigo": r.mensajes_ok_sin_codigo,
+                "mensajes_integros_con_codigo": r.mensajes_ok_con_codigo,
+                "ber_teorica_con_codigo": r.ber_teorica_con_codigo,
+                "ambiguedad_teorica": r.ambiguedad_teorica,
+                "exito_mensaje_teorico_con_codigo": r.exito_mensaje_teorico_con_codigo,
+                "exito_mensaje_teorico_sin_codigo": r.exito_mensaje_teorico_sin_codigo,
+                "ic95_ber_con_codigo": list(r.intervalo_ber_con_codigo),
+            }
+            for r in self._resultados
+        ]
+        try:
+            GestorHistorial.exportar(datos, ruta)
+        except OSError as exc:
+            self.aviso.mostrar("error", f"No se pudo exportar: {html.escape(str(exc))}")
+            return
+        self.aviso.mostrar("exito", f"Se exportaron {len(datos)} experimentos a {html.escape(ruta)}.")

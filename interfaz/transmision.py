@@ -6,6 +6,9 @@ import html
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QHeaderView,
+    QTableWidget,
+    QTableWidgetItem,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -202,9 +205,10 @@ class PaginaTransmision(QWidget):
         self.datos_dec = {}
         for i, (clave, titulo) in enumerate(
             [
+                ("detectados", "Bloques con error detectado"),
                 ("corregidos", "Bloques corregidos"),
                 ("residuales", "Errores residuales (bits)"),
-                ("empates", "Empates detectados"),
+                ("empates", "Empates"),
                 ("ambiguos", "Bits ambiguos"),
             ]
         ):
@@ -212,6 +216,14 @@ class PaginaTransmision(QWidget):
             rejilla.addWidget(t, 0, i)
             rejilla.addWidget(v, 1, i)
             self.datos_dec[clave] = v
+        self.datos_dec["detectados"].setToolTip(
+            "Lo que observa el RECEPTOR: bloques recibidos que no son 00…0 ni 11…1. "
+            "No sabe cuántos errores hubo en cada uno."
+        )
+        self.datos_dec["corregidos"].setToolTip(
+            "Dato del SIMULADOR (conoce el mensaje original): bloques alterados por el canal "
+            "cuyo bit se decodificó correctamente."
+        )
         self.visor_decodificado = VisorBits(60)
         c = self.panel_dec.cuerpo
         c.addLayout(rejilla)
@@ -224,21 +236,43 @@ class PaginaTransmision(QWidget):
         return self.panel_dec
 
     def _crear_panel_resultado(self) -> Panel:
-        self.panel_res = Panel("Resultado · comparación de mensajes")
+        self.panel_res = Panel("Resultado · emisor y receptores")
         self.aviso_resultado = Aviso()
         self.lbl_original = etiqueta("")
+        self.lbl_sin_codigo = etiqueta("")
         self.lbl_recuperado = etiqueta("")
-        for lbl in (self.lbl_original, self.lbl_recuperado):
-            lbl.setStyleSheet(f"background:{e.FONDO}; border:1px solid {e.BORDE}; border-radius:8px; padding:10px;")
+        for lbl, color in ((self.lbl_original, e.AZUL), (self.lbl_sin_codigo, e.TEXTO_3),
+                           (self.lbl_recuperado, e.CIAN)):
+            lbl.setStyleSheet(
+                f"background:{e.FONDO}; border:1px solid {e.BORDE}; border-left:3px solid {color};"
+                " border-radius:8px; padding:10px;"
+            )
             lbl.setTextFormat(Qt.RichText)
         rejilla = QGridLayout()
-        rejilla.addWidget(etiqueta("Mensaje original", "secundario"), 0, 0)
-        rejilla.addWidget(etiqueta("Mensaje recuperado", "secundario"), 0, 1)
+        rejilla.setHorizontalSpacing(12)
+        rejilla.addWidget(etiqueta("📤 Emisor · mensaje original", "secundario"), 0, 0)
+        rejilla.addWidget(etiqueta("📥 Receptor SIN código (mismo canal)", "secundario"), 0, 1)
+        rejilla.addWidget(etiqueta("📥 Receptor CON código de repetición", "secundario"), 0, 2)
         rejilla.addWidget(self.lbl_original, 1, 0)
-        rejilla.addWidget(self.lbl_recuperado, 1, 1)
+        rejilla.addWidget(self.lbl_sin_codigo, 1, 1)
+        rejilla.addWidget(self.lbl_recuperado, 1, 2)
+        for col in range(3):
+            rejilla.setColumnStretch(col, 1)
+
+        self.tabla_comparacion = QTableWidget(0, 3)
+        self.tabla_comparacion.setHorizontalHeaderLabels(["Métrica", "Sin código", "Con código"])
+        self.tabla_comparacion.verticalHeader().setVisible(False)
+        self.tabla_comparacion.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabla_comparacion.setAlternatingRowColors(True)
+        self.tabla_comparacion.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabla_comparacion.setMinimumHeight(390)
+
         c = self.panel_res.cuerpo
         c.addWidget(self.aviso_resultado)
         c.addLayout(rejilla)
+        c.addWidget(etiqueta("Métricas de esta transmisión (una sola realización aleatoria; para conclusiones "
+                             "use el Laboratorio BSC con muchos ensayos)", "secundario"))
+        c.addWidget(self.tabla_comparacion)
         return self.panel_res
 
     # -------------------------------------------------------------- estado
@@ -410,6 +444,7 @@ class PaginaTransmision(QWidget):
     def _mostrar_resultado(self) -> None:
         r = self._resultado
         dec = r.decodificacion
+        self.datos_dec["detectados"].setText(f"{dec.num_bloques_detectados} de {dec.bits.size}")
         self.datos_dec["corregidos"].setText(f"{r.bloques_corregidos} de {r.bloques_con_errores} alterados")
         self.datos_dec["residuales"].setText(str(r.errores_residuales))
         self.datos_dec["empates"].setText(
@@ -426,29 +461,17 @@ class PaginaTransmision(QWidget):
         )
 
         self.lbl_original.setText(html.escape(r.mensaje_original).replace("\n", "<br>"))
+        self.lbl_sin_codigo.setText(self._html_recibido(r.recuperado_sin_codigo, r.mensaje_original, 0))
+        self.lbl_recuperado.setText(self._html_recibido(r.recuperado, r.mensaje_original, r.ambiguedades))
+        self._llenar_comparacion(r)
         estado = r.estado
         if estado is EstadoTransmision.AMBIGUO:
-            self.lbl_recuperado.setText(
-                f"<span style='color:{e.NARANJA}'>No se reconstruye el mensaje: {r.ambiguedades} bit(s) "
-                "quedaron ambiguos y el sistema no inventa su valor.</span>"
-            )
             self.aviso_resultado.mostrar(
                 "advertencia",
                 f"<b>Transmisión ambigua.</b> Con n = {r.n} (par) hubo {r.ambiguedades} empate(s) sin resolver. "
                 "Elija otra política de desempate o un n impar para obtener una decisión.",
             )
         else:
-            rec = r.recuperado
-            if rec.utf8_valido:
-                self.lbl_recuperado.setText(html.escape(rec.texto).replace("\n", "<br>") or "<i>(vacío)</i>")
-            else:
-                self.lbl_recuperado.setText(
-                    f"<span style='color:{e.ROJO}'><b>Fallo de recuperación:</b> los bytes recibidos no forman "
-                    "UTF-8 válido, así que no hay texto recuperado.</span><br>"
-                    f"<span style='color:{e.TEXTO_2}'>Bytes (hex): {html.escape(rec.bytes_hex[:120])}"
-                    f"{'…' if len(rec.bytes_hex) > 120 else ''}<br>Vista aproximada (NO es el mensaje; "
-                    f"� marca bytes inválidos): {html.escape(rec.vista_previa)}</span>"
-                )
             if estado is EstadoTransmision.EXITO:
                 self.aviso_resultado.mostrar(
                     "exito",
@@ -462,3 +485,55 @@ class PaginaTransmision(QWidget):
                     f"<b>El mensaje recuperado NO coincide con el original.</b> Quedaron {r.errores_residuales} "
                     f"bit(s) de información erróneos tras decodificar.{extra}",
                 )
+
+    @staticmethod
+    def _html_recibido(rec, original: str, ambiguos: int) -> str:
+        """Representa lo que obtiene un receptor, sin reemplazar en silencio bytes inválidos."""
+        if rec.utf8_valido is None:
+            return (f"<span style='color:{e.NARANJA}'><b>Sin mensaje:</b> {ambiguos} bit(s) quedaron ambiguos "
+                    "y el sistema no inventa su valor.</span>")
+        if not rec.utf8_valido:
+            hexa = rec.bytes_hex
+            return (
+                f"<span style='color:{e.ROJO}'><b>Fallo de recuperación:</b> los bytes recibidos no forman "
+                "UTF-8 válido, así que no hay texto recuperado.</span><br>"
+                f"<span style='color:{e.TEXTO_2}'>Bytes (hex): {html.escape(hexa[:96])}{'…' if len(hexa) > 96 else ''}"
+                f"<br>Vista aproximada (NO es el mensaje; � = byte inválido): {html.escape(rec.vista_previa)}</span>"
+            )
+        texto = html.escape(rec.texto).replace("\n", "<br>") or "<i>(vacío)</i>"
+        if rec.texto == original:
+            return f"{texto}<br><span style='color:{e.VERDE}'>✓ idéntico al original</span>"
+        return f"{texto}<br><span style='color:{e.ROJO}'>× difiere del original</span>"
+
+    def _llenar_comparacion(self, r) -> None:
+        sin, con = r.metricas_sin_codigo, r.metricas_con_codigo
+        k = sin.bits_utiles
+        pe = mat.probabilidad_error_bit(r.n, r.p)
+
+        def pct(x):
+            return f"{100 * x:.3f} %"
+
+        filas = [
+            ("Bits útiles (k)", k, k),
+            ("Bits transmitidos", sin.bits_transmitidos, con.bits_transmitidos),
+            ("Tasa R (útiles / transmitidos)", "1", f"1/{r.n} = {con.tasa:.4f}"),
+            ("Redundancia (bits extra por bit útil)", "0", f"{r.n - 1}"),
+            ("Errores introducidos por el canal", sin.errores_introducidos, con.errores_introducidos),
+            ("BER del canal observada (p configurada)", f"{pct(sin.ber_canal)} ({r.p:g})", f"{pct(con.ber_canal)} ({r.p:g})"),
+            ("Errores residuales en bits útiles", sin.errores_residuales, con.errores_residuales),
+            ("Bits ambiguos", 0, con.ambiguos),
+            ("BER residual observada", pct(sin.ber_residual), pct(con.ber_residual)),
+            ("Bits útiles recuperados", f"{sin.porcentaje_recuperacion:.2f} %", f"{con.porcentaje_recuperacion:.2f} %"),
+            ("Mensaje íntegro", "sí" if sin.mensaje_integro else "no", "sí" if con.mensaje_integro else "no"),
+            ("BER residual teórica", f"p = {r.p:g}", f"P_e = {pe:.4g}"),
+            ("P(mensaje íntegro) teórica",
+             f"{1 - mat.probabilidad_fallo_sin_codigo(r.p, k):.4g}",
+             f"{1 - mat.probabilidad_fallo_mensaje(r.n, r.p, k, empates_como_fallo=r.politica.value == 'ambiguo'):.4g}"),
+        ]
+        self.tabla_comparacion.setRowCount(len(filas))
+        for i, fila_datos in enumerate(filas):
+            for j, valor in enumerate(fila_datos):
+                item = QTableWidgetItem(str(valor))
+                if j:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.tabla_comparacion.setItem(i, j, item)
