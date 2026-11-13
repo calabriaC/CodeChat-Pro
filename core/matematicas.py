@@ -138,6 +138,25 @@ def redundancia(n: int) -> int:
     return validar_longitud(n) - 1
 
 
+def parametros_codigo(n: int) -> dict:
+    """Parámetros (n, k, M, d) del código de repetición y sus consecuencias.
+
+    * k = 1 bit de información por bloque; M = 2^k = 2 palabras código.
+    * d = n; corrige t = floor((d-1)/2) y detecta d - 1 errores por bloque.
+    """
+    n = validar_longitud(n)
+    return {
+        "n": n,
+        "k": 1,
+        "M": 2,
+        "d": distancia_minima(n),
+        "t": capacidad_correccion(n),
+        "detecta": capacidad_deteccion(n),
+        "R": tasa_codigo(n),
+        "redundancia": redundancia(n),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Teoría de la información: entropía binaria y capacidad del BSC
 # ---------------------------------------------------------------------------
@@ -211,28 +230,21 @@ def probabilidad_fallo_mensaje(n: int, p: float, k_bits: int, empates_como_fallo
         q = probabilidad_error_mayoria_estricta(n, p) + probabilidad_empate(n, p)
     else:
         q = probabilidad_error_bit(n, p)
-    if k_bits == 0 or q == 0.0:
+    return _uno_menos_potencia(q, k_bits)
+
+
+def probabilidad_fallo_sin_codigo(p: float, k_bits: int) -> float:
+    """Sin código, el mensaje falla si al menos uno de sus k bits se invierte: 1 - (1-p)^k."""
+    p = validar_probabilidad(p)
+    if isinstance(k_bits, bool) or not isinstance(k_bits, Integral) or k_bits < 0:
+        raise ValueError("k_bits debe ser un entero no negativo.")
+    return _uno_menos_potencia(p, k_bits)
+
+
+def _uno_menos_potencia(q: float, k: int) -> float:
+    """1 - (1 - q)^k calculado de forma numéricamente estable."""
+    if k == 0 or q == 0.0:
         return 0.0
     if q >= 1.0:
         return 1.0
-    # 1 - (1-q)^k calculado de forma numéricamente estable.
-    return -math.expm1(k_bits * math.log1p(-q))
-
-
-# ---------------------------------------------------------------------------
-# Estadística de los experimentos
-# ---------------------------------------------------------------------------
-def intervalo_wilson(exitos: int, ensayos: int, z: float = 1.959963984540054) -> tuple[float, float]:
-    """Intervalo de confianza de Wilson (95 % por defecto) para una proporción."""
-    if ensayos <= 0:
-        raise ValueError("El número de ensayos debe ser positivo.")
-    if not 0 <= exitos <= ensayos:
-        raise ValueError("El número de éxitos debe estar entre 0 y el número de ensayos.")
-    phat = exitos / ensayos
-    z2 = z * z
-    denominador = 1.0 + z2 / ensayos
-    centro = (phat + z2 / (2 * ensayos)) / denominador
-    margen = z * math.sqrt(phat * (1 - phat) / ensayos + z2 / (4 * ensayos * ensayos)) / denominador
-    bajo = 0.0 if exitos == 0 else max(0.0, centro - margen)
-    alto = 1.0 if exitos == ensayos else min(1.0, centro + margen)
-    return bajo, alto
+    return -math.expm1(k * math.log1p(-q))

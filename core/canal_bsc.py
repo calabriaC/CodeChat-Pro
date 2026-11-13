@@ -1,7 +1,13 @@
-"""Canal binario simétrico (BSC, Binary Symmetric Channel).
+"""Canal binario simétrico (BSC, Binary Symmetric Channel) — implementación propia.
 
 Cada bit transmitido se invierte de forma independiente con probabilidad p y
-llega intacto con probabilidad 1 - p.
+llega intacto con probabilidad 1 - p:
+
+    P(recibir 1 | enviar 0) = P(recibir 0 | enviar 1) = p
+
+El generador de números aleatorios de NumPy (con semilla configurable) solo
+produce los números uniformes u en [0, 1); la decisión de invertir el bit
+(u < p) se implementa explícitamente.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ class ResultadoCanal:
 
     @property
     def proporcion_errores(self) -> float:
-        """Proporción OBSERVADA de bits invertidos (estimación empírica de p)."""
+        """Proporción OBSERVADA de bits invertidos (estimación empírica de p, no es p)."""
         total = self.transmitidos.size
         return self.num_errores / total if total else 0.0
 
@@ -45,14 +51,25 @@ class CanalBSC:
         self.generador = generador if generador is not None else np.random.default_rng()
 
     def transmitir(self, bits) -> ResultadoCanal:
-        transmitidos = validar_bits(bits)
-        # random() devuelve valores en [0, 1): con p = 0 nunca hay error y con
-        # p = 0.5 cada bit se invierte con probabilidad exactamente 1/2.
-        mascara = self.generador.random(transmitidos.size) < self.probabilidad
-        recibidos = transmitidos ^ mascara.astype(np.uint8)
+        enviados = validar_bits(bits).tolist()
+        p = self.probabilidad
+        # Un número uniforme u en [0, 1) por bit. Con p = 0 nunca se cumple u < p
+        # (canal perfecto); con p = 0.5 cada bit se invierte con probabilidad 1/2.
+        uniformes = self.generador.random(len(enviados)).tolist()
+
+        recibidos: list[int] = []
+        errores: list[bool] = []
+        for bit, u in zip(enviados, uniformes):
+            if u < p:                     # ocurre un error con probabilidad p
+                recibidos.append(1 - bit)  # se invierte el bit: 0 -> 1, 1 -> 0
+                errores.append(True)
+            else:
+                recibidos.append(bit)
+                errores.append(False)
+
         return ResultadoCanal(
-            transmitidos=transmitidos.copy(),
-            recibidos=recibidos,
-            mascara_errores=mascara,
-            probabilidad=self.probabilidad,
+            transmitidos=np.array(enviados, dtype=np.uint8),
+            recibidos=np.array(recibidos, dtype=np.uint8),
+            mascara_errores=np.array(errores, dtype=bool),
+            probabilidad=p,
         )

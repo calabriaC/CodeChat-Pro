@@ -3,7 +3,7 @@ import json
 import pytest
 
 from almacenamiento.gestor_json import ErrorHistorial, GestorHistorial
-from core.simulador import transmitir_mensaje
+from core.simulacion import transmitir_mensaje
 
 
 @pytest.fixture

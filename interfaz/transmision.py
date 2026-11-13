@@ -24,7 +24,7 @@ from core import matematicas as mat
 from core.canal_bsc import CanalBSC
 from core.codificador import codificar
 from core.decodificador import PoliticaDesempate, decodificar
-from core.simulador import EstadoTransmision, ResultadoTransmision, crear_generador
+from core.simulacion import EstadoTransmision, ResultadoTransmision, crear_generador
 from interfaz import estilos as e
 from interfaz.componentes import Aviso, Panel, VisorBits, etiqueta, fila, pagina_desplazable
 
@@ -369,7 +369,11 @@ class PaginaTransmision(QWidget):
         n = self.spin_n.value()
         politica = PoliticaDesempate(self.cmb_politica.currentData())
         dec = decodificar(self._canal.recibidos, n, politica, self._rng)
+        # Escenario A (sin código): mismos bits útiles por el mismo BSC(p), mismo orden
+        # de uso del generador que core.simulacion.transmitir_mensaje (reproducible).
+        sin_codigo = CanalBSC(self._canal.probabilidad, self._rng).transmitir(self._bits)
         self._resultado = ResultadoTransmision(
+            sin_codigo=sin_codigo,
             mensaje_original=self._texto,
             n=n,
             p=self._canal.probabilidad,
@@ -434,8 +438,17 @@ class PaginaTransmision(QWidget):
                 "Elija otra política de desempate o un n impar para obtener una decisión.",
             )
         else:
-            recuperado = r.mensaje_recuperado or ""
-            self.lbl_recuperado.setText(html.escape(recuperado).replace("\n", "<br>") or "<i>(vacío)</i>")
+            rec = r.recuperado
+            if rec.utf8_valido:
+                self.lbl_recuperado.setText(html.escape(rec.texto).replace("\n", "<br>") or "<i>(vacío)</i>")
+            else:
+                self.lbl_recuperado.setText(
+                    f"<span style='color:{e.ROJO}'><b>Fallo de recuperación:</b> los bytes recibidos no forman "
+                    "UTF-8 válido, así que no hay texto recuperado.</span><br>"
+                    f"<span style='color:{e.TEXTO_2}'>Bytes (hex): {html.escape(rec.bytes_hex[:120])}"
+                    f"{'…' if len(rec.bytes_hex) > 120 else ''}<br>Vista aproximada (NO es el mensaje; "
+                    f"� marca bytes inválidos): {html.escape(rec.vista_previa)}</span>"
+                )
             if estado is EstadoTransmision.EXITO:
                 self.aviso_resultado.mostrar(
                     "exito",
@@ -443,7 +456,7 @@ class PaginaTransmision(QWidget):
                     f"y la decodificación corrigió todos los bloques afectados.",
                 )
             else:
-                extra = "" if r.utf8_valido else " Algunos bytes no forman UTF-8 válido y se muestran como �."
+                extra = "" if r.utf8_valido else " Además, los bytes resultantes no son UTF-8 válido."
                 self.aviso_resultado.mostrar(
                     "error",
                     f"<b>El mensaje recuperado NO coincide con el original.</b> Quedaron {r.errores_residuales} "

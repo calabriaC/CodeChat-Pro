@@ -86,3 +86,35 @@ def test_n_uno_no_corrige():
 def test_longitud_no_multiplo_de_n():
     with pytest.raises(ValueError):
         decodificar([1, 1, 1, 0], 3)
+
+
+def test_ejemplo_manual_conteo_por_bloque():
+    """111 000 111 con un error en cada bloque: 101 010 110 -> se recupera 101."""
+    res = decodificar([1, 0, 1, 0, 1, 0, 1, 1, 0], 3)
+    assert res.votos_uno.tolist() == [2, 1, 2]
+    assert res.votos_cero.tolist() == [1, 2, 1]
+    assert res.bits.tolist() == [1, 0, 1]
+    assert res.bloques_no_codigo.tolist() == [True, True, True]  # el receptor detecta los 3 bloques
+
+
+def test_dos_errores_en_n3_engañan_al_decodificador():
+    """Con 2 > t = 1 errores el bloque 111 llega como 001: se decide 0 (error residual)."""
+    res = decodificar([0, 0, 1], 3)
+    assert res.bits.tolist() == [0]
+    assert res.bloques_no_codigo.tolist() == [True]  # se detecta, pero se corrige mal
+
+
+def test_n_errores_convierten_en_otra_palabra_y_no_se_detectan():
+    """Si se invierten los n bits, llega la otra palabra código: ni se detecta ni se corrige."""
+    res = decodificar([0, 0, 0, 0, 0], 5)
+    assert res.bits.tolist() == [0]
+    assert res.bloques_no_codigo.tolist() == [False]
+
+
+@pytest.mark.parametrize("n", [2, 3, 4, 5, 6, 7])
+def test_deteccion_garantizada_hasta_n_menos_1_errores(n):
+    palabra = codificar([1], n)
+    for k in range(1, n):
+        recibido = palabra.copy()
+        recibido[:k] ^= 1
+        assert decodificar(recibido, n).bloques_no_codigo.tolist() == [True]

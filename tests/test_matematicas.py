@@ -4,7 +4,7 @@ import pytest
 
 from core import matematicas as mat
 from core.decodificador import PoliticaDesempate
-from core.simulador import simular_ber
+from core.simulacion import simular_ber
 
 
 @pytest.mark.parametrize("n", range(1, 22))
@@ -85,10 +85,6 @@ def test_probabilidad_fallo_mensaje():
     )
 
 
-def test_intervalo_wilson():
-    bajo, alto = mat.intervalo_wilson(50, 100)
-    assert bajo < 0.5 < alto
-    assert mat.intervalo_wilson(0, 1000)[0] == 0.0
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 4, 5, 7])
@@ -102,3 +98,32 @@ def test_monte_carlo_coincide_con_la_teoria(n, p):
     assert abs(res.ber_residual - teorico) < 5 * sigma + 1e-12
     # La BER del canal es otra magnitud: estima p, no P_e.
     assert abs(res.ber_canal - p) < 5 * math.sqrt(p * (1 - p) / (num_bits * n))
+
+
+@pytest.mark.parametrize("n", [3, 5, 7])
+def test_parametros_n_k_m_d(n):
+    par = mat.parametros_codigo(n)
+    assert (par["n"], par["k"], par["M"], par["d"]) == (n, 1, 2, n)
+    assert par["t"] == (n - 1) // 2 and par["detecta"] == n - 1
+
+
+def test_valores_exactos_n_3_5_7_con_p_01():
+    """Valores pedidos por la guía (p = 0.1), calculados a mano término a término."""
+    # n = 3: 3(0.01)(0.9) + 0.001
+    assert mat.probabilidad_error_bit(3, 0.1) == pytest.approx(0.028, abs=1e-15)
+    # n = 5: 10(0.001)(0.81) + 5(0.0001)(0.9) + 0.00001
+    assert mat.probabilidad_error_bit(5, 0.1) == pytest.approx(0.00856, abs=1e-15)
+    # n = 7: 35 p^4 q^3 + 21 p^5 q^2 + 7 p^6 q + p^7
+    esperado = 35 * 1e-4 * 0.729 + 21 * 1e-5 * 0.81 + 7 * 1e-6 * 0.9 + 1e-7
+    assert esperado == pytest.approx(0.0027280)
+    assert mat.probabilidad_error_bit(7, 0.1) == pytest.approx(esperado, abs=1e-15)
+
+
+def test_capacidad_decrece_con_p():
+    valores = [mat.capacidad_bsc(p / 100) for p in range(0, 51)]
+    assert all(a > b for a, b in zip(valores, valores[1:]))
+
+
+def test_fallo_sin_codigo():
+    assert mat.probabilidad_fallo_sin_codigo(0.1, 8) == pytest.approx(1 - 0.9**8)
+    assert mat.probabilidad_fallo_sin_codigo(0.0, 100) == 0.0

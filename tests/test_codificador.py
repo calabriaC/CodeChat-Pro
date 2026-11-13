@@ -56,3 +56,14 @@ def test_conversion_utf8_msb_primero():
 def test_codificar_texto():
     bits, cod = codificar_texto("Hi", 3)
     assert bits.size == 16 and cod.size == 48
+
+
+def test_ejemplo_manual_101_con_n_3():
+    """Caso verificable a mano: 101 con n = 3 -> 111 000 111 (longitud 3 -> 9)."""
+    codificado = codificar([1, 0, 1], 3)
+    assert "".join(map(str, codificado.tolist())) == "111000111"
+    assert codificado.size == 9
+
+
+def test_mensaje_vacio():
+    assert codificar([], 5).size == 0

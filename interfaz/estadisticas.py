@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from core import matematicas as mat
 from core.decodificador import PoliticaDesempate
-from core.simulador import crear_generador, simular_ber
+from core.simulacion import crear_generador, simular_ber
 from interfaz import estilos as e
 from interfaz.componentes import Aviso, LienzoGrafica, Panel, etiqueta, fila, pagina_desplazable
 
