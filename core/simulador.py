@@ -66,6 +66,9 @@ class ResultadoTransmision:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     fecha_hora: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
+    def __post_init__(self) -> None:
+        self.politica = PoliticaDesempate(self.politica)
+
     # --- métricas derivadas -------------------------------------------------
     @property
     def errores_introducidos(self) -> int:
