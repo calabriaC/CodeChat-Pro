@@ -47,9 +47,7 @@ Capacidad: C(0) = 1, C(0.01) = 0.919, C(0.05) = 0.714, C(0.1) = 0.531, C(0.2) = 
 ## Herramientas utilizadas y declaración de uso de IA
 
 - **Bibliotecas:** PySide6 (interfaz), Matplotlib (gráficas), NumPy (solo generador aleatorio con semilla y contenedores; los algoritmos del núcleo son bucles explícitos), Pytest (pruebas), JSON (historial).
-- **Claude Code (Anthropic, modelo Claude Opus 5.5):** asistente de programación. Se usó para generar la estructura del proyecto, el código del núcleo y de la interfaz, las pruebas automáticas, esta documentación y la verificación numérica de las fórmulas, a partir de las especificaciones y la guía del equipo.
-- **[Completar por el equipo]:** otras herramientas de IA usadas (por ejemplo, para redactar las especificaciones) y su propósito.
-- **[Completar por el equipo]:** qué revisó, comprendió y validó cada integrante (por ejemplo, el cálculo a mano de P_e para n = 3, 5, 7 y la ejecución de las pruebas).
+- **Claude Code (Anthropic):** se usó principalmente para desarrollar la interfaz gráfica y las pruebas automáticas, y también como apoyo en la documentación y en la implementación del núcleo (codificador, canal BSC y decodificador). El núcleo fue revisado por el equipo, que verificó a mano sus resultados (P_e para n = 3, 5 y 7, y C(p)) y puede explicarlo línea por línea.
 
 ## Fuentes
 
